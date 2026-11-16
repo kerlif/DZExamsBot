@@ -74,7 +74,8 @@ PLAYWRIGHT_HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "1") == "1"
 # ─── Storage ─────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.getenv("DB_PATH", os.path.join(BASE_DIR, "dzexams.db"))
-TMP_DIR = os.getenv("TMP_DIR", "/tmp/dzexams_bot")  # nosec B108: app-created dir, files deleted after use
+# المجلد ينشئه التطبيق نفسه والملفات تُحذف بعد الاستعمال — B108 غير منطبق
+TMP_DIR = os.getenv("TMP_DIR", "/tmp/dzexams_bot")  # nosec B108
 
 # ─── Background indexing ─────────────────────────────────────────────────
 # Comma-separated levels auto-indexed daily ("" = disabled), e.g. "bac,bem,3as"

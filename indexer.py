@@ -136,16 +136,16 @@ class Indexer:
         return is_new
 
     def count_users(self, exclude=frozenset()) -> int:
-        """عدد المستخدمين المسجّلين (باستثناء المشرفين إن طُلب)."""
+        """عدد المستخدمين المسجّلين (باستثناء المشرفين إن طُلب).
+
+        الاستثناء يُصفّى في بايثون عمدًا: بناء الاستعلام ديناميكيًا
+        بسلسلة نصية يرفضه فحص bandit (B608)، والجدول صغير.
+        """
         db = self._conn()
-        if exclude:
-            marks = ",".join("?" * len(exclude))
-            row = db.execute(
-                f"SELECT COUNT(*) FROM users WHERE user_id NOT IN ({marks})",
-                tuple(exclude)).fetchone()
-        else:
-            row = db.execute("SELECT COUNT(*) FROM users").fetchone()
-        return row[0] if row else 0
+        rows = db.execute("SELECT user_id FROM users").fetchall()
+        if not exclude:
+            return len(rows)
+        return sum(1 for r in rows if r[0] not in exclude)
 
     # ─── الفهرسة ─────────────────────────────────────────────────────
     async def targets_for_subject(self, level: str, subject: str) -> List[dict]:
