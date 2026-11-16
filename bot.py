@@ -21,7 +21,7 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     ApplicationBuilder, CallbackQueryHandler, CommandHandler,
-    ContextTypes, filters, MessageHandler,
+    ContextTypes, filters, MessageHandler, TypeHandler,
 )
 from telegram.request import HTTPXRequest
 
@@ -100,7 +100,6 @@ def stages_markup() -> InlineKeyboardMarkup:
     rows = []
     for st, (name, _levels) in catalog.STAGES.items():
         rows.append([InlineKeyboardButton(name, callback_data=f"STG:{st}")])
-    rows.append([InlineKeyboardButton("🔎 بحث", callback_data="SEARCH")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -213,13 +212,6 @@ WELCOME = (
     "اختر الطور للبدء:"
 )
 
-SEARCH_HELP = (
-    "للبحث في المحتوى، اكتب:\n"
-    "/search كلمة البحث\n\n"
-    "مثال: /search رياضيات فروض"
-)
-
-
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         WELCOME, reply_markup=stages_markup(), disable_web_page_preview=True,
@@ -234,16 +226,6 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             WELCOME, reply_markup=stages_markup(), disable_web_page_preview=True)
     except BadRequest:
         pass
-
-
-async def search_help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.edit_message_text(
-        SEARCH_HELP,
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🏠 القائمة", callback_data="MENU")]]),
-        disable_web_page_preview=True)
 
 
 # ─── التنقل: الطور ← المستوى ← الشعبة ← المادة ← القسم ← العناصر ─────────
@@ -471,12 +453,8 @@ async def _back_to_list_caption(q, state: dict):
 
     رسالة الوثيقة لها تعليق لا نص، فلا يصح edit_message_text عليها.
     """
-    if state.get("search"):
-        text = (f"🔎 نتائج البحث عن: {esc(state.get('query', ''))}\n"
-                f"عدد النتائج: {len(state['items'])} — اضغط على أي نتيجة لعرضها.")
-    else:
-        text = (f"{list_title(state)}\n\nعدد المستندات: {len(state['items'])}\n"
-                f"اضغط على أي مستند لعرضه.")
+    text = (f"{list_title(state)}\n\nعدد المستندات: {len(state['items'])}\n"
+            f"اضغط على أي مستند لعرضه.")
     markup = list_view_markup(state, state.get("page", 0))
     try:
         await q.edit_message_caption(caption=text, parse_mode="HTML",
@@ -511,11 +489,6 @@ async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
                       or q.message.video):
         await q.answer()
         await _back_to_list_caption(q, state)
-        return
-    if state.get("search"):
-        await q.answer()
-        await q.edit_message_text(
-            "استخدم /search للبحث مجددًا أو /start للتصفح.")
         return
     await q.answer()
     level = state["level"]
@@ -676,37 +649,44 @@ async def _err_edit(q, e: ContentError):
         pass
 
 
-# ─── البحث المحلي ────────────────────────────────────────────────────────
-async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    query = " ".join(context.args) if context.args else ""
-    if not query:
-        await msg.reply_text(
-            "للبحث، اكتب:\n/search كلمة البحث\n\nمثال: /search رياضيات فروض")
-        return
-    status = await msg.reply_text("جاري البحث…")
-    results = indexer.search(query, limit=config.SEARCH_RESULTS_LIMIT)
-    if not results:
-        await status.edit_text("لا نتائج مطابقة. جرّب كلمات أخرى.")
-        return
-    state = {"level": "", "subject": "", "section": "", "stream": "",
-             "items": results, "search": True, "query": query}
-    key = sessions.put(state)
-    state["key"] = key
-    text = (f"🔎 نتائج البحث عن: {esc(query)}\n"
-            f"عدد النتائج: {len(results)} — اضغط على أي نتيجة لعرضها.")
-    await status.edit_text(
-        text, parse_mode="HTML",
-        reply_markup=list_view_markup(state, 0),
-        disable_web_page_preview=True)
-
-
 async def _on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """رسالة نصية عادية: تذكير بالأوامر."""
     msg = update.effective_message
     if not (msg.text or "").strip():
         return
     await msg.reply_text("اكتب /start للبدء، أو اختر من القائمة.")
+
+
+async def _record_user_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تسجيل كل مستخدم يتفاعل مع البوت + إخطار المشرف بالمستخدم الجديد.
+
+    يعمل في مجموعة -1 قبل كل المعالجات، فلا يفوّت أي مستخدم جديد
+    مهما كانت أول رسالة منه (/start أو زر أو نص).
+    """
+    user = update.effective_user
+    if not user or user.is_bot:
+        return
+    try:
+        is_new = indexer.record_user(
+            user.id, user.username or "",
+            user.first_name or "", user.last_name or "")
+    except Exception:
+        log.exception("record_user failed")
+        return
+    if not is_new or user.id in config.ADMIN_IDS:
+        return
+    name = " ".join(
+        part for part in (user.first_name, user.last_name) if part) or "—"
+    username = f"@{user.username}" if user.username else "لا يوجد"
+    text = ("👤 مستخدم جديد للبوت:\n"
+            f"الاسم: {name}\n"
+            f"المعرّف: {user.id}\n"
+            f"اليوزر: {username}")
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text)
+        except TelegramError:
+            log.warning("notify admin %s failed", admin_id)
 
 
 # ─── أوامر المشرفين ──────────────────────────────────────────────────────
@@ -733,6 +713,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _admin_only(update):
         return
     await update.effective_message.reply_text(indexer.stats_text())
+
+
+async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عدد مستخدمي البوت — للمشرف فقط (غير ظاهر في القائمة)."""
+    if not await _admin_only(update):
+        return
+    n = indexer.count_users(exclude=config.ADMIN_IDS)
+    await update.effective_message.reply_text(f"👥 عدد مستخدمي البوت: {n}")
 
 
 async def cmd_index(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -837,7 +825,6 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     route = data.split(":", 1)[0]
     handlers = {
         "MENU": menu_cb,
-        "SEARCH": search_help_cb,
         "STG": cb_stage,
         "L": cb_level,
         "STR": cb_stream_select,
@@ -901,7 +888,6 @@ async def _post_init(app):
     try:
         await app.bot.set_my_commands([
             BotCommand("start", "القائمة الرئيسية"),
-            BotCommand("search", "بحث في المحتوى"),
         ])
     except TelegramError:
         log.warning("set_my_commands failed")
@@ -930,13 +916,16 @@ def main():
     app.add_error_handler(_on_error)
 
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("index", cmd_index))
     app.add_handler(CommandHandler("indexall", cmd_indexall))
     app.add_handler(CommandHandler("idxstatus", cmd_idxstatus))
     app.add_handler(CommandHandler("idxstop", cmd_idxstop))
     app.add_handler(CommandHandler("ip", cmd_ip))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("list", cmd_list))
+    # تسجيل المستخدمين قبل كل شيء (مجموعة -1، لا يحجب غيره)
+    app.add_handler(TypeHandler(Update, _record_user_update, block=False),
+                    group=-1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
                                    _on_text_message))
     app.add_handler(CallbackQueryHandler(cb_router))

@@ -1,13 +1,13 @@
 """
-indexer.py — فهرسة محتوى الموقع في SQLite + بحث محلي FTS5
+indexer.py — فهرسة محتوى الموقع في SQLite + سجل مستخدمي البوت
 
 لماذا؟ مسارات البحث والمنتدى في الموقع محمية بتحقق LiteSpeed reCAPTCHA،
 والحل العملي: فهرسة دورية هادئة (طلب كل ~1.5 ث) في قاعدة محلية،
-ثم البحث المحلي الفوري عبر FTS5 يدعم العربية.
+ثم يجيب البوت من القاعدة المحلية.
 
 الجدول items:
   token فريد — url — title — level/subject/section/stream — kind — year — pdf_url
-جدول items_fts (FTS5) للبحث النصي.
+الجدول users: مستخدمو البوت (للإحصاء وإخطار المشرف بالجدد).
 """
 import asyncio
 import logging
@@ -40,27 +40,17 @@ CREATE TABLE IF NOT EXISTS items (
     updated_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_items_level ON items(level, subject);
-CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
-    title, level, subject, content='items', content_rowid='id',
-    tokenize='unicode61 remove_diacritics 2'
-);
-CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
-  INSERT INTO items_fts(rowid, title, level, subject)
-  VALUES (new.id, new.title, new.level, new.subject);
-END;
-CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN
-  INSERT INTO items_fts(items_fts, rowid, title, level, subject)
-  VALUES ('delete', old.id, old.title, old.level, old.subject);
-END;
-CREATE TRIGGER IF NOT EXISTS items_au AFTER UPDATE OF title, level, subject ON items BEGIN
-  INSERT INTO items_fts(items_fts, rowid, title, level, subject)
-  VALUES ('delete', old.id, old.title, old.level, old.subject);
-  INSERT INTO items_fts(rowid, title, level, subject)
-  VALUES (new.id, new.title, new.level, new.subject);
-END;
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
+);
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT DEFAULT '',
+    first_name TEXT DEFAULT '',
+    last_name TEXT DEFAULT '',
+    first_seen INTEGER,
+    last_seen INTEGER
 );
 """
 
@@ -125,11 +115,37 @@ class Indexer:
         db.commit()
         return added
 
-    def rebuild_fts(self):
-        """إعادة بناء فهرس البحث يدويًا (تلقائيًا لا حاجة لها بفضل المحفزات)."""
+    # ─── المستخدمون ───────────────────────────────────────────────────
+    def record_user(self, user_id: int, username: str = "",
+                    first_name: str = "", last_name: str = "") -> bool:
+        """يسجّل مستخدمًا؛ يرجع True إن كان أول ظهور له."""
         db = self._conn()
-        db.execute("INSERT INTO items_fts(items_fts) VALUES('rebuild')")
+        now = int(time.time())
+        cur = db.execute(
+            "INSERT OR IGNORE INTO users"
+            "(user_id, username, first_name, last_name, first_seen, last_seen)"
+            " VALUES(?,?,?,?,?,?)",
+            (user_id, username, first_name, last_name, now, now))
+        is_new = cur.rowcount == 1
+        if not is_new:
+            db.execute(
+                "UPDATE users SET username=?, first_name=?, last_name=?,"
+                " last_seen=? WHERE user_id=?",
+                (username, first_name, last_name, now, user_id))
         db.commit()
+        return is_new
+
+    def count_users(self, exclude=frozenset()) -> int:
+        """عدد المستخدمين المسجّلين (باستثناء المشرفين إن طُلب)."""
+        db = self._conn()
+        if exclude:
+            marks = ",".join("?" * len(exclude))
+            row = db.execute(
+                f"SELECT COUNT(*) FROM users WHERE user_id NOT IN ({marks})",
+                tuple(exclude)).fetchone()
+        else:
+            row = db.execute("SELECT COUNT(*) FROM users").fetchone()
+        return row[0] if row else 0
 
     # ─── الفهرسة ─────────────────────────────────────────────────────
     async def targets_for_subject(self, level: str, subject: str) -> List[dict]:
@@ -213,39 +229,6 @@ class Indexer:
         return added
 
     # ─── البحث ───────────────────────────────────────────────────────
-    def search(self, query: str, level: Optional[str] = None,
-               limit: int = 10) -> List[dict]:
-        db = self._conn()
-        q = (query or "").strip()
-        if not q:
-            return []
-        # بحث FTS ثم fallback إلى LIKE إن لم يجد
-        rows = []
-        try:
-            fts_q = " ".join(f'"{t}"' for t in q.split()[:6])
-            sql = ("SELECT i.* FROM items_fts f JOIN items i ON i.id = f.rowid "
-                   "WHERE items_fts MATCH ? ")
-            params = [fts_q]
-            if level:
-                sql += "AND i.level = ? "
-                params.append(level)
-            sql += "LIMIT ?"
-            params.append(limit)
-            rows = db.execute(sql, params).fetchall()
-        except sqlite3.OperationalError:
-            rows = []
-        if not rows:
-            like = f"%{q}%"
-            sql = ("SELECT * FROM items WHERE (title LIKE ? OR subject LIKE ?) ")
-            params = [like, like]
-            if level:
-                sql += "AND level = ? "
-                params.append(level)
-            sql += "LIMIT ?"
-            params.append(limit)
-            rows = db.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
     def item_by_token(self, token: str) -> Optional[dict]:
         db = self._conn()
         r = db.execute("SELECT * FROM items WHERE token = ?", (token,)).fetchone()

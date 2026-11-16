@@ -85,7 +85,6 @@ INDEX_SECTION_DELAY = float(os.getenv("INDEX_SECTION_DELAY", "1.5"))
 # ─── UI ──────────────────────────────────────────────────────────────────
 ITEMS_PER_PAGE = int(os.getenv("ITEMS_PER_PAGE", "8"))
 SUBJECTS_PER_PAGE = int(os.getenv("SUBJECTS_PER_PAGE", "20"))
-SEARCH_RESULTS_LIMIT = int(os.getenv("SEARCH_RESULTS_LIMIT", "10"))
 
 # مهلة بين تحميلين لنفس المستخدم (ثوانٍ) — حماية من إغراق الموقع
 USER_DL_COOLDOWN = int(os.getenv("USER_DL_COOLDOWN", "10"))

@@ -86,8 +86,8 @@ async def main():
     page = await svc.section_items("bac", "mathematiques", "", stream="se")
     check("bac/se items", len(page.items) > 15, f"{len(page.items)} items")
 
-    # 7) الفهرسة + البحث
-    print("\n== 7) indexer + search ==")
+    # 7) الفهرسة
+    print("\n== 7) indexer ==")
     db_path = os.path.join(config.TMP_DIR, "smoke_test.db")
     os.makedirs(config.TMP_DIR, exist_ok=True)
     if os.path.exists(db_path):
@@ -95,10 +95,6 @@ async def main():
     idx = Indexer(fetcher, db_path)
     added = await idx.index_subject("bem", "mathematiques")
     check("index subject", added > 10, f"+{added} items")
-    res = idx.search("الرياضيات", level="bem")
-    check("search results", len(res) > 3, f"{len(res)} hits")
-    res2 = idx.search("2025", level="bem")
-    check("search by year", len(res2) > 0, f"{len(res2)} hits")
     print(idx.stats_text())
 
     # 8) إحصائيات fetcher
